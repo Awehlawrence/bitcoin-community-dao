@@ -151,3 +151,72 @@
             { member: tx-sender }
             { reputation: (+ current-rep u1) })
         (ok true)))
+
+
+(define-public (delegate-vote (delegate-to principal) (proposal-id uint))
+    (let ((proposal (unwrap! (map-get? proposals { proposal-id: proposal-id }) ERR-INVALID-PROPOSAL))
+          (voter-status (default-to { voted: false } 
+                        (map-get? votes { voter: tx-sender, proposal-id: proposal-id }))))
+        (asserts! (is-dao-member delegate-to) ERR-NOT-AUTHORIZED)
+        (asserts! (not (get voted voter-status)) ERR-ALREADY-VOTED)
+        (asserts! (<= stacks-block-height (get end-block proposal)) ERR-PROPOSAL-EXPIRED)
+        (asserts! (not (is-eq tx-sender delegate-to)) ERR-SELF-DELEGATION)
+        (asserts! (is-eq (get status proposal) "active") ERR-INVALID-STATUS)
+        (map-set votes 
+            { voter: tx-sender, proposal-id: proposal-id }
+            { voted: true })
+        (ok true)))
+
+(define-public (increase-reputation (member principal))
+    (let ((current-rep (get-member-reputation member)))
+        (asserts! (is-dao-member tx-sender) ERR-NOT-AUTHORIZED)
+        (map-set member-details 
+            { member: member }
+            { reputation: (+ current-rep u1) })
+        (ok true)))
+
+;; Read-Only Functions
+(define-read-only (get-proposal (proposal-id uint))
+    (map-get? proposals { proposal-id: proposal-id }))
+
+(define-read-only (get-treasury-balance)
+    (var-get dao-treasury))
+
+(define-read-only (get-member-reputation (member principal))
+    (default-to u0 
+        (get reputation 
+            (map-get? member-details { member: member }))))
+
+
+;; Additional Functions
+(define-public (withdraw-stake (amount uint))
+    (let ((member-rep (get-member-reputation tx-sender)))
+        (asserts! (is-dao-member tx-sender) ERR-NOT-AUTHORIZED)
+        (asserts! (> amount u0) ERR-ZERO-AMOUNT)
+        (asserts! (>= (var-get dao-treasury) amount) ERR-INSUFFICIENT-FUNDS)
+        (try! (as-contract (stx-transfer? amount (as-contract tx-sender) tx-sender)))
+        (var-set dao-treasury (- (var-get dao-treasury) amount))
+        (ok true)))
+
+(define-public (cancel-proposal (proposal-id uint))
+    (let ((proposal (unwrap! (map-get? proposals { proposal-id: proposal-id }) ERR-INVALID-PROPOSAL)))
+        (asserts! (is-eq tx-sender (get proposer proposal)) ERR-NOT-AUTHORIZED)
+        (asserts! (is-eq (get status proposal) "active") ERR-INVALID-STATUS)
+        (asserts! (<= stacks-block-height (get end-block proposal)) ERR-PROPOSAL-EXPIRED)
+        (map-set proposals { proposal-id: proposal-id }
+            (merge proposal { status: "void" }))
+        (ok true)))
+
+(define-public (transfer-reputation (to principal) (amount uint))
+    (let ((from-rep (get-member-reputation tx-sender))
+          (to-rep (get-member-reputation to)))
+        (asserts! (is-dao-member tx-sender) ERR-NOT-AUTHORIZED)
+        (asserts! (>= from-rep amount) ERR-INSUFFICIENT-FUNDS)
+        (asserts! (not (is-eq tx-sender to)) ERR-SELF-DELEGATION)
+        (map-set member-details 
+            { member: tx-sender }
+            { reputation: (- from-rep amount) })
+        (map-set member-details 
+            { member: to }
+            { reputation: (+ to-rep amount) })
+        (ok true)))
