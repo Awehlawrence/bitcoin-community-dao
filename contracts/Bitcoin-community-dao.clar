@@ -79,3 +79,75 @@
 
         (var-set proposal-count (+ proposal-id u1))
         (ok proposal-id)))
+
+;; Voting System
+(define-public (cast-vote (proposal-id uint) (vote-for bool))
+    (let ((proposal (unwrap! (map-get? proposals { proposal-id: proposal-id }) ERR-INVALID-PROPOSAL))
+          (voter-status (default-to { voted: false } 
+                        (map-get? votes { voter: tx-sender, proposal-id: proposal-id }))))
+
+        (asserts! (is-dao-member tx-sender) ERR-NOT-AUTHORIZED)
+        (asserts! (not (get voted voter-status)) ERR-ALREADY-VOTED)
+        (asserts! (<= stacks-block-height (get end-block proposal)) ERR-PROPOSAL-EXPIRED)
+
+        (map-set votes 
+            { voter: tx-sender, proposal-id: proposal-id }
+            { voted: true })
+
+        (if vote-for
+            (map-set proposals { proposal-id: proposal-id }
+                (merge proposal { votes-for: (+ (get votes-for proposal) u1) }))
+            (map-set proposals { proposal-id: proposal-id }
+                (merge proposal { votes-against: (+ (get votes-against proposal) u1) })))
+
+        (ok true)))
+
+;; Fund Management
+(define-public (fund-dao)
+    (let ((amount (stx-get-balance tx-sender)))
+        (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+        (var-set dao-treasury (+ (var-get dao-treasury) amount))
+        (ok true)))
+
+(define-public (execute-proposal (proposal-id uint))
+    (let ((proposal (unwrap! (map-get? proposals { proposal-id: proposal-id }) ERR-INVALID-PROPOSAL)))
+        (asserts! (>= stacks-block-height (get end-block proposal)) ERR-PROPOSAL-EXPIRED)
+        (asserts! (is-proposal-approved proposal) ERR-NOT-AUTHORIZED)
+        (asserts! (>= (var-get dao-treasury) (get amount proposal)) ERR-INSUFFICIENT-FUNDS)
+
+        (try! (as-contract (stx-transfer? 
+            (get amount proposal)
+            tx-sender
+            (get proposer proposal))))
+
+        (var-set dao-treasury (- (var-get dao-treasury) (get amount proposal)))
+        (map-set proposals { proposal-id: proposal-id }
+            (merge proposal { status: "done" }))
+        (ok true)))
+
+;; Helper Functions
+(define-private (is-proposal-approved (proposal {
+        title: (string-utf8 256),
+        description: (string-utf8 1024),
+        amount: uint,
+        proposer: principal,
+        votes-for: uint,
+        votes-against: uint,
+        status: (string-ascii 6),
+        end-block: uint
+    }))
+    (let ((total-votes (+ (get votes-for proposal) (get votes-against proposal))))
+        (and
+            (> total-votes u0)
+            (>= (* (get votes-for proposal) u100) (* total-votes REQUIRED_APPROVAL_PERCENTAGE)))))
+
+;; Membership Management
+(define-public (join-dao (stake uint))
+    (let ((current-rep (get-member-reputation tx-sender)))
+        (asserts! (>= stake MIN_PROPOSAL_AMOUNT) ERR-INVALID-PROPOSAL)
+        (try! (stx-transfer? stake tx-sender (as-contract tx-sender)))
+        (var-set dao-treasury (+ (var-get dao-treasury) stake))
+        (map-set member-details 
+            { member: tx-sender }
+            { reputation: (+ current-rep u1) })
+        (ok true)))
